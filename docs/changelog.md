@@ -7,16 +7,22 @@ what we publish.
 
 [//]: # Here's the template to use when starting a new batch of notes:
 [//]: ## UNRELEASED
-[//]: ### ⭐️ New
-[//]: ### 🦋 Changed
+[//]: ### ✨ Highlights
+[//]: ### Language changes
+[//]: ### Standard library changes
+[//]: ### Tooling changes
 [//]: ### ❌ Removed
 [//]: ### 🛠️ Fixed
 
 ## UNRELEASED
 
-### ⭐️ New
+### ✨ Highlights
 
-### 🦋 Changed
+### Language changes
+
+### Standard library changes
+
+### Tooling changes
 
 ### ❌ Removed
 

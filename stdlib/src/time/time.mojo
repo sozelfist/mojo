@@ -15,25 +15,28 @@
 You can import these APIs from the `time` package. For example:
 
 ```mojo
-from time import now
+from time import perf_counter_ns
 ```
 """
 
+from math import floor
+from os import abort
 from sys import (
     external_call,
+    is_amd_gpu,
+    is_nvidia_gpu,
+    is_gpu,
+    llvm_intrinsic,
     os_is_linux,
     os_is_windows,
-    triple_is_nvidia_cuda,
-    llvm_intrinsic,
 )
 from sys._assembly import inlined_assembly
-from math import floor
 
 from memory import UnsafePointer
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # Utilities
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 # Enums used in time.h 's glibc
 alias _CLOCK_REALTIME = 0
@@ -44,7 +47,7 @@ alias _CLOCK_MONOTONIC_RAW = 4
 
 # Constants
 alias _NSEC_PER_USEC = 1000
-alias _NSEC_PER_MSEC = 1000000
+alias _NSEC_PER_MSEC = 1_000_000
 alias _USEC_PER_MSEC = 1000
 alias _MSEC_PER_SEC = 1000
 alias _NSEC_PER_SEC = _NSEC_PER_USEC * _USEC_PER_MSEC * _MSEC_PER_SEC
@@ -62,11 +65,11 @@ struct _CTimeSpec(Stringable):
     var tv_sec: Int  # Seconds
     var tv_subsec: Int  # subsecond (nanoseconds on linux and usec on mac)
 
-    fn __init__(inout self):
+    fn __init__(out self):
         self.tv_sec = 0
         self.tv_subsec = 0
 
-    fn as_nanoseconds(self) -> Int:
+    fn as_nanoseconds(self) -> UInt:
         @parameter
         if os_is_linux():
             return self.tv_sec * _NSEC_PER_SEC + self.tv_subsec
@@ -81,21 +84,23 @@ struct _CTimeSpec(Stringable):
 @value
 @register_passable("trivial")
 struct _FILETIME:
-    var dwLowDateTime: UInt32
-    var dwHighDateTime: UInt32
+    var dw_low_date_time: UInt32
+    var dw_high_date_time: UInt32
 
-    fn __init__(inout self):
-        self.dwLowDateTime = 0
-        self.dwHighDateTime = 0
+    fn __init__(out self):
+        self.dw_low_date_time = 0
+        self.dw_high_date_time = 0
 
-    fn as_nanoseconds(self) -> Int:
+    fn as_nanoseconds(self) -> UInt:
         # AFTER subtracting windows offset the return value fits in a signed int64
         # BEFORE subtracting windows offset the return value does not fit in a signed int64
         # Taken from https://github.com/microsoft/STL/blob/c8d1efb6d504f6392acf8f6d01fd703f7c8826c0/stl/src/xtime.cpp#L50
-        alias windowsToUnixEpochOffsetNs: Int = 0x19DB1DED53E8000
+        alias windows_to_unix_epoch_offset_ns: Int = 0x19DB1DED53E8000
         var interval_count: UInt64 = (
-            self.dwHighDateTime.cast[DType.uint64]() << 32
-        ) + self.dwLowDateTime.cast[DType.uint64]() - windowsToUnixEpochOffsetNs
+            self.dw_high_date_time.cast[DType.uint64]() << 32
+        ) + self.dw_low_date_time.cast[
+            DType.uint64
+        ]() - windows_to_unix_epoch_offset_ns
         return int(interval_count * 100)
 
 
@@ -105,13 +110,15 @@ fn _clock_gettime(clockid: Int) -> _CTimeSpec:
     var ts = _CTimeSpec()
 
     # Call libc's clock_gettime.
-    _ = external_call["clock_gettime", Int32](Int32(clockid), Reference(ts))
+    _ = external_call["clock_gettime", Int32](
+        Int32(clockid), Pointer.address_of(ts)
+    )
 
     return ts
 
 
 @always_inline
-fn _gettime_as_nsec_unix(clockid: Int) -> Int:
+fn _gettime_as_nsec_unix(clockid: Int) -> UInt:
     if os_is_linux():
         var ts = _clock_gettime(clockid)
         return ts.as_nanoseconds()
@@ -122,19 +129,30 @@ fn _gettime_as_nsec_unix(clockid: Int) -> Int:
 
 
 @always_inline
-fn _realtime_nanoseconds() -> Int:
+fn _gpu_clock() -> UInt:
+    """Returns a 64-bit unsigned cycle counter."""
+    alias asm = "llvm.nvvm.read.ptx.sreg.clock64" if is_nvidia_gpu() else "llvm.amdgcn.s.memtime"
+    return int(llvm_intrinsic[asm, Int64]())
+
+
+@always_inline
+fn _realtime_nanoseconds() -> UInt:
     """Returns the current realtime time in nanoseconds"""
     return _gettime_as_nsec_unix(_CLOCK_REALTIME)
 
 
 @always_inline
-fn _monotonic_nanoseconds() -> Int:
+fn _monotonic_nanoseconds() -> UInt:
     """Returns the current monotonic time in nanoseconds"""
 
     @parameter
-    if os_is_windows():
+    if is_gpu():
+        return _gpu_clock()
+    elif os_is_windows():
         var ft = _FILETIME()
-        external_call["GetSystemTimePreciseAsFileTime", NoneType](Reference(ft))
+        external_call["GetSystemTimePreciseAsFileTime", NoneType](
+            Pointer.address_of(ft)
+        )
 
         return ft.as_nanoseconds()
     else:
@@ -142,29 +160,28 @@ fn _monotonic_nanoseconds() -> Int:
 
 
 @always_inline
-fn _monotonic_raw_nanoseconds() -> Int:
+fn _monotonic_raw_nanoseconds() -> UInt:
     """Returns the current monotonic time in nanoseconds"""
-
     return _gettime_as_nsec_unix(_CLOCK_MONOTONIC_RAW)
 
 
 @always_inline
-fn _process_cputime_nanoseconds() -> Int:
+fn _process_cputime_nanoseconds() -> UInt:
     """Returns the high-resolution per-process timer from the CPU"""
 
     return _gettime_as_nsec_unix(_CLOCK_PROCESS_CPUTIME_ID)
 
 
 @always_inline
-fn _thread_cputime_nanoseconds() -> Int:
+fn _thread_cputime_nanoseconds() -> UInt:
     """Returns the thread-specific CPU-time clock"""
 
     return _gettime_as_nsec_unix(_CLOCK_THREAD_CPUTIME_ID)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # perf_counter
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -181,13 +198,13 @@ fn perf_counter() -> Float64:
     return Float64(_monotonic_nanoseconds()) / _NSEC_PER_SEC
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # perf_counter_ns
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
-fn perf_counter_ns() -> Int:
+fn perf_counter_ns() -> UInt:
     """Return the value (in nanoseconds) of a performance counter, i.e.
     a clock with the highest available resolution to measure a short duration.
     It does include time elapsed during sleep and is system-wide. The reference
@@ -197,26 +214,17 @@ fn perf_counter_ns() -> Int:
     Returns:
         The current time in ns.
     """
-
-    @parameter
-    if triple_is_nvidia_cuda():
-        return int(
-            inlined_assembly[
-                "mov.u64 $0, %globaltimer;", UInt64, constraints="=l"
-            ]()
-        )
     return _monotonic_nanoseconds()
 
 
-# ===----------------------------------------------------------------------===#
-# now
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
+# monotonic
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
-fn now() -> Int:
-    """Deprecated: Please use time.perf_counter_ns instead.
-
+fn monotonic() -> UInt:
+    """
     Returns the current monotonic time time in nanoseconds. This function
     queries the current platform's monotonic clock, making it useful for
     measuring time differences, but the significance of the returned value
@@ -228,14 +236,16 @@ fn now() -> Int:
     return perf_counter_ns()
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # time_function
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
 @parameter
-fn _time_function_windows[func: fn () capturing -> None]() -> Int:
+fn _time_function_windows[
+    func: fn () raises capturing [_] -> None
+]() raises -> UInt:
     """Calculates elapsed time in Windows"""
 
     var ticks_per_sec: _WINDOWS_LARGE_INTEGER = 0
@@ -266,7 +276,7 @@ fn _time_function_windows[func: fn () capturing -> None]() -> Int:
 
 @always_inline
 @parameter
-fn time_function[func: fn () capturing -> None]() -> Int:
+fn time_function[func: fn () raises capturing [_] -> None]() raises -> UInt:
     """Measures the time spent in the function.
 
     Parameters:
@@ -286,9 +296,31 @@ fn time_function[func: fn () capturing -> None]() -> Int:
     return toc - tic
 
 
-# ===----------------------------------------------------------------------===#
+@always_inline
+@parameter
+fn time_function[func: fn () capturing [_] -> None]() -> UInt:
+    """Measures the time spent in the function.
+
+    Parameters:
+        func: The function to time.
+
+    Returns:
+        The time elapsed in the function in ns.
+    """
+
+    @parameter
+    fn raising_func() raises:
+        func()
+
+    try:
+        return time_function[raising_func]()
+    except err:
+        return abort[UInt](err)
+
+
+# ===-----------------------------------------------------------------------===#
 # sleep
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 fn sleep(sec: Float64):
@@ -299,11 +331,10 @@ fn sleep(sec: Float64):
     """
 
     @parameter
-    if triple_is_nvidia_cuda():
+    if is_gpu():
         var nsec = sec * 1.0e9
-        llvm_intrinsic["llvm.nvvm.nanosleep", NoneType](
-            nsec.cast[DType.int32]()
-        )
+        alias intrinsic = "llvm.nvvm.nanosleep" if is_nvidia_gpu() else "llvm.amdgcn.s.sleep"
+        llvm_intrinsic[intrinsic, NoneType](nsec.cast[DType.int32]())
         return
 
     alias NANOSECONDS_IN_SECOND = 1_000_000_000
@@ -320,7 +351,7 @@ fn sleep(sec: Float64):
     _ = rem
 
 
-fn sleep(sec: Int):
+fn sleep(sec: UInt):
     """Suspends the current thread for the seconds specified.
 
     Args:
@@ -328,7 +359,7 @@ fn sleep(sec: Int):
     """
 
     @parameter
-    if triple_is_nvidia_cuda():
+    if is_gpu():
         return sleep(Float64(sec))
 
     @parameter

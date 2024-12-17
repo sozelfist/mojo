@@ -19,7 +19,8 @@
 
 def main():
     test_debug_assert()
-    test_debug_assert_formattable()
+    test_debug_assert_multiple_args()
+    test_debug_assert_writable()
 
 
 # CHECK-OK-LABEL: test_debug_assert
@@ -31,17 +32,25 @@ def test_debug_assert():
     print("is reached")
 
 
-# CHECK-OK-LABEL: test_debug_assert_formattable
-def test_debug_assert_formattable():
-    print("== test_debug_assert_formattable")
-    debug_assert(True, FormattableOnly("failed with Formattable arg"))
+# CHECK-OK-LABEL: test_debug_assert_multiple_args
+def test_debug_assert_multiple_args():
+    print("== test_debug_assert_multiple_args")
+    debug_assert(True, "passing mutliple args: ", 42, ", ", 4.2)
+    # CHECK-OK: is reached
+    print("is reached")
+
+
+# CHECK-OK-LABEL: test_debug_assert_writable
+def test_debug_assert_writable():
+    print("== test_debug_assert_writable")
+    debug_assert(True, WritableOnly("failed with Writable arg"))
     # CHECK-OK: is reached
     print("is reached")
 
 
 @value
-struct FormattableOnly:
+struct WritableOnly:
     var message: String
 
-    fn format_to(self, inout writer: Formatter):
+    fn write_to[W: Writer](self, mut writer: W):
         writer.write(self.message)

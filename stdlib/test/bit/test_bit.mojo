@@ -25,7 +25,9 @@ from bit import (
     pop_count,
     rotate_bits_left,
     rotate_bits_right,
+    log2_floor,
 )
+from math import log2, floor
 from testing import assert_equal
 
 
@@ -276,6 +278,7 @@ def test_bit_not_simd():
 
 
 def test_is_power_of_two():
+    assert_equal(is_power_of_two(Int.MIN), False)
     assert_equal(is_power_of_two(-(2**59)), False)
     assert_equal(is_power_of_two(-1), False)
     assert_equal(is_power_of_two(0), False)
@@ -285,6 +288,7 @@ def test_is_power_of_two():
     assert_equal(is_power_of_two(4), True)
     assert_equal(is_power_of_two(5), False)
     assert_equal(is_power_of_two(2**59), True)
+    assert_equal(is_power_of_two(Int.MAX), False)
 
 
 def test_is_power_of_two_simd():
@@ -321,6 +325,8 @@ def test_is_power_of_two_simd():
         is_power_of_two(var4),
         SIMD[DType.bool, simd_width](False, False, False, True),
     )
+
+    assert_equal(is_power_of_two(Int64.MIN), False)
 
 
 def test_bit_width():
@@ -447,10 +453,14 @@ def test_rotate_bits_int():
     assert_equal(rotate_bits_left[0](104), 104)
     assert_equal(rotate_bits_left[2](104), 416)
     assert_equal(rotate_bits_left[-2](104), 26)
+    assert_equal(rotate_bits_left[8](104), 26624)
+    assert_equal(rotate_bits_left[-8](104), 7493989779944505344)
 
     assert_equal(rotate_bits_right[0](104), 104)
     assert_equal(rotate_bits_right[2](104), 26)
     assert_equal(rotate_bits_right[-2](104), 416)
+    assert_equal(rotate_bits_right[8](104), 7493989779944505344)
+    assert_equal(rotate_bits_right[-8](104), 26624)
 
 
 def test_rotate_bits_simd():
@@ -489,6 +499,30 @@ def test_rotate_bits_simd():
     assert_equal(rotate_bits_right[6](Scalar[type](96)), 129)
 
 
+fn _log2_floor(n: Int) -> Int:
+    return int(floor(log2(float(n))))
+
+
+def test_log2_floor():
+    assert_equal(log2_floor(0), 0)
+    for i in range(1, 100):
+        assert_equal(
+            log2_floor(i),
+            _log2_floor(i),
+            msg="mismatching value for the input value of " + str(i),
+        )
+
+    fn _check_alias[n: Int](expected: Int) raises:
+        alias res = log2_floor(n)
+        assert_equal(res, expected)
+
+    _check_alias[0](0)
+    _check_alias[1](0)
+    _check_alias[2](1)
+    _check_alias[15](3)
+    _check_alias[32](5)
+
+
 def main():
     test_rotate_bits_int()
     test_rotate_bits_simd()
@@ -511,3 +545,4 @@ def main():
     test_pop_count()
     test_pop_count_simd()
     test_bit_not_simd()
+    test_log2_floor()

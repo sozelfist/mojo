@@ -21,8 +21,11 @@ from tempfile import gettempdir
 
 import os
 import sys
-from collections import Optional, List
+from collections import List, Optional
 from pathlib import Path
+
+from memory import Span
+from utils import write_buffered
 
 alias TMP_MAX = 10_000
 
@@ -210,7 +213,7 @@ struct TemporaryDirectory:
     """Whether to ignore cleanup errors."""
 
     fn __init__(
-        inout self,
+        mut self,
         suffix: String = "",
         prefix: String = "tmp",
         dir: Optional[String] = None,
@@ -260,7 +263,25 @@ struct TemporaryDirectory:
 
 
 struct NamedTemporaryFile:
-    """A handle to a temporary file."""
+    """A handle to a temporary file.
+
+    Example:
+    ```mojo
+    from tempfile import NamedTemporaryFile
+    from pathlib import Path
+    def main():
+        var p: Path
+        with NamedTemporaryFile(mode="rw") as f:
+            p = f.name
+            f.write("Hello world!")
+            f.seek(0)
+            print(
+                f.read() == "Hello world!"
+            )
+        print(str(p), p.exists()) #Removed by default
+    ```
+    Note: `NamedTemporaryFile.__init__` document the arguments.
+    """
 
     var _file_handle: FileHandle
     """The underlying file handle."""
@@ -270,7 +291,7 @@ struct NamedTemporaryFile:
     """Name of the file."""
 
     fn __init__(
-        inout self,
+        mut self,
         mode: String = "w",
         name: Optional[String] = None,
         suffix: String = "",
@@ -313,10 +334,7 @@ struct NamedTemporaryFile:
             # python implementation expands the path,
             # but several functions are not yet implemented in mojo
             # i.e. abspath, normpath
-
-            # TODO(field sensitivity lifetimes), eliminate tmp.
-            var tmp = FileHandle(self.name, mode=mode)
-            self._file_handle = tmp^
+            self._file_handle = FileHandle(self.name, mode=mode)
             return
         except:
             raise Error("Failed to create temporary file")
@@ -328,13 +346,13 @@ struct NamedTemporaryFile:
         except:
             pass
 
-    fn close(inout self) raises:
+    fn close(mut self) raises:
         """Closes the file handle."""
         self._file_handle.close()
         if self._delete:
             os.remove(self.name)
 
-    fn __moveinit__(inout self, owned existing: Self):
+    fn __moveinit__(out self, owned existing: Self):
         """Moves constructor for the file handle.
 
         Args:
@@ -386,13 +404,27 @@ struct NamedTemporaryFile:
         """
         return self._file_handle.seek(offset, whence)
 
-    fn write(self, data: String) raises:
-        """Write the data to the file.
+    fn write[*Ts: Writable](mut self, *args: *Ts):
+        """Write a sequence of Writable arguments to the provided Writer.
+
+        Parameters:
+            Ts: Types of the provided argument sequence.
 
         Args:
-            data: The data to write to the file.
+            args: Sequence of arguments to write to this Writer.
         """
-        self._file_handle.write(data)
+        var file = FileDescriptor(self._file_handle._get_raw_fd())
+        write_buffered[buffer_size=4096](file, args)
+
+    @always_inline
+    fn write_bytes(mut self, bytes: Span[Byte, _]):
+        """
+        Write a span of bytes to the file.
+
+        Args:
+            bytes: The byte span to write to this file.
+        """
+        self._file_handle.write_bytes(bytes)
 
     fn __enter__(owned self) -> Self:
         """The function to call when entering the context.

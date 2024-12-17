@@ -15,56 +15,50 @@
 These are Mojo built-ins, so you don't need to import them.
 """
 
+from collections import InlineArray
+from sys import _libc as libc
 from sys import (
     bitwidthof,
     external_call,
-    os_is_windows,
+    is_amd_gpu,
+    is_gpu,
+    is_nvidia_gpu,
     stdout,
-    triple_is_nvidia_cuda,
 )
+from sys._libc import dup, fclose, fdopen, fflush
+from sys.ffi import OpaquePointer
 
-from builtin.builtin_list import _LITRefPackHelper
 from builtin.dtype import _get_dtype_printf_format
 from builtin.file_descriptor import FileDescriptor
-from memory import UnsafePointer
+from memory import UnsafePointer, memcpy
 
-from utils import StringRef, StaticString, StringSlice
-from utils import Formattable, Formatter
+from utils import (
+    StaticString,
+    StringRef,
+    StringSlice,
+    write_args,
+    write_buffered,
+)
 
 # ===----------------------------------------------------------------------=== #
 #  _file_handle
 # ===----------------------------------------------------------------------=== #
 
 
-fn _dup(fd: Int32) -> Int32:
-    @parameter
-    if os_is_windows():
-        return external_call["_dup", Int32](fd)
-    else:
-        return external_call["dup", Int32](fd)
-
-
 @value
 @register_passable("trivial")
 struct _fdopen[mode: StringLiteral = "a"]:
-    var handle: UnsafePointer[NoneType]
+    var handle: OpaquePointer
 
-    fn __init__(inout self, stream_id: FileDescriptor):
+    @implicit
+    fn __init__(out self, stream_id: FileDescriptor):
         """Creates a file handle to the stdout/stderr stream.
 
         Args:
             stream_id: The stream id
         """
 
-        @parameter
-        if os_is_windows():
-            self.handle = external_call["_fdopen", UnsafePointer[NoneType]](
-                _dup(stream_id.value), mode.unsafe_cstr_ptr()
-            )
-        else:
-            self.handle = external_call["fdopen", UnsafePointer[NoneType]](
-                _dup(stream_id.value), mode.unsafe_cstr_ptr()
-            )
+        self.handle = fdopen(dup(stream_id.value), mode.unsafe_cstr_ptr())
 
     fn __enter__(self) -> Self:
         """Open the file handle for use within a context manager"""
@@ -72,7 +66,7 @@ struct _fdopen[mode: StringLiteral = "a"]:
 
     fn __exit__(self):
         """Closes the file handle."""
-        _ = external_call["fclose", Int32](self.handle)
+        _ = fclose(self.handle)
 
     fn readline(self) -> String:
         """Reads an entire line from stdin or until EOF. Lines are delimited by a newline character.
@@ -129,24 +123,28 @@ struct _fdopen[mode: StringLiteral = "a"]:
         Hello
         ```
         """
-        # getdelim will resize the buffer as needed.
-        var buffer = UnsafePointer[UInt8].alloc(1)
+        # getdelim will allocate the buffer using malloc().
+        var buffer = UnsafePointer[UInt8]()
+        # ssize_t getdelim(char **restrict lineptr, size_t *restrict n,
+        #                  int delimiter, FILE *restrict stream);
         var bytes_read = external_call[
             "getdelim",
             Int,
             UnsafePointer[UnsafePointer[UInt8]],
-            UnsafePointer[UInt32],
+            UnsafePointer[UInt64],
             Int,
-            UnsafePointer[NoneType],
+            OpaquePointer,
         ](
-            UnsafePointer[UnsafePointer[UInt8]].address_of(buffer),
-            UnsafePointer[UInt32].address_of(UInt32(1)),
+            UnsafePointer.address_of(buffer),
+            UnsafePointer.address_of(UInt64(0)),
             ord(delimiter),
             self.handle,
         )
-        # Overwrite the delimiter with a null terminator.
-        buffer[bytes_read - 1] = 0
-        return String(buffer, bytes_read)
+        # Copy the buffer (excluding the delimiter itself) into a Mojo String.
+        var s = String(StringRef(buffer, bytes_read - 1))
+        # Explicitly free the buffer using free() instead of the Mojo allocator.
+        libc.free(buffer.bitcast[NoneType]())
+        return s
 
 
 # ===----------------------------------------------------------------------=== #
@@ -157,7 +155,7 @@ struct _fdopen[mode: StringLiteral = "a"]:
 @no_inline
 fn _flush(file: FileDescriptor = stdout):
     with _fdopen(file) as fd:
-        _ = external_call["fflush", Int32](fd.handle)
+        _ = fflush(fd.handle)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -172,14 +170,16 @@ fn _printf[
     # The argument pack will contain references for each value in the pack,
     # but we want to pass their values directly into the C printf call. Load
     # all the members of the pack.
-    var loaded_pack = _LITRefPackHelper(arguments._value).get_loaded_kgen_pack()
+    var loaded_pack = arguments.get_loaded_kgen_pack()
 
     @parameter
-    if triple_is_nvidia_cuda():
+    if is_nvidia_gpu():
         _ = external_call["vprintf", Int32](
-            fmt.unsafe_cstr_ptr(), Reference(loaded_pack)
+            fmt.unsafe_cstr_ptr(), Pointer.address_of(loaded_pack)
         )
-        _ = loaded_pack
+    elif is_amd_gpu():
+        # constrained[False, "_printf on AMDGPU is not implemented"]()
+        pass
     else:
         with _fdopen(file) as fd:
             _ = __mlir_op.`pop.external_call`[
@@ -220,7 +220,7 @@ fn _snprintf[
     # The argument pack will contain references for each value in the pack,
     # but we want to pass their values directly into the C snprintf call. Load
     # all the members of the pack.
-    var loaded_pack = _LITRefPackHelper(arguments._value).get_loaded_kgen_pack()
+    var loaded_pack = arguments.get_loaded_kgen_pack()
 
     return int(
         __mlir_op.`pop.external_call`[
@@ -237,115 +237,6 @@ fn _snprintf[
     )
 
 
-@no_inline
-fn _snprintf_scalar[
-    type: DType,
-    float_format: StringLiteral = "%.17g",
-](buffer: UnsafePointer[UInt8], size: Int, x: Scalar[type]) -> Int:
-    @parameter
-    if type is DType.bool:
-        if x:
-            return _snprintf["True"](buffer, size)
-        else:
-            return _snprintf["False"](buffer, size)
-    elif type.is_integral():
-        return _snprintf[_get_dtype_printf_format[type]()](buffer, size, x)
-    elif (
-        type is DType.float16 or type is DType.bfloat16 or type is DType.float32
-    ):
-        # We need to cast the value to float64 to print it.
-        return _float_repr[float_format](buffer, size, x.cast[DType.float64]())
-    elif type is DType.float64:
-        return _float_repr[float_format](buffer, size, rebind[Float64](x))
-    return 0
-
-
-# ===----------------------------------------------------------------------=== #
-#  Helper functions to print a single pop scalar without spacing or new line.
-# ===----------------------------------------------------------------------=== #
-
-
-@no_inline
-fn _float_repr[
-    fmt: StringLiteral = "%.17g"
-](buffer: UnsafePointer[UInt8], size: Int, x: Float64) -> Int:
-    # Using `%.17g` with decimal check is equivalent to CPython's fallback path
-    # when its more complex dtoa library (forked from
-    # https://github.com/dtolnay/dtoa) is not available.
-    var n = _snprintf[fmt](buffer, size, x.value)
-    # If the buffer isn't big enough to add anything, then just return.
-    if n + 2 >= size:
-        return n
-    # Don't do anything fancy. Just insert ".0" if there is no decimal and this
-    # is not in exponent form.
-    var p = buffer
-    alias minus = ord("-")
-    alias dot = ord(".")
-    if p[] == minus:
-        p += 1
-    while p[] != 0 and isdigit(p[]):
-        p += 1
-    if p[]:
-        return n
-    p[] = dot
-    p += 1
-    p[] = ord("0")
-    p += 1
-    p[] = 0
-    return n + 2
-
-
-# ===----------------------------------------------------------------------=== #
-#  _put
-# ===----------------------------------------------------------------------=== #
-
-
-fn _put(strref: StringRef, file: FileDescriptor = stdout):
-    var str_slice = StringSlice[ImmutableStaticLifetime](
-        unsafe_from_utf8_strref=strref
-    )
-
-    _put(str_slice, file=file)
-
-
-@no_inline
-fn _put[
-    lif: ImmutableLifetime, //
-](x: StringSlice[lif], file: FileDescriptor = stdout):
-    # Avoid printing "(null)" for an empty/default constructed `String`
-    var str_len = x.byte_length()
-
-    if not str_len:
-        return
-
-    @parameter
-    if triple_is_nvidia_cuda():
-        # Note:
-        #   This assumes that the `StringSlice` that was passed in is NUL
-        #   terminated.
-        var tmp = 0
-        var arg_ptr = UnsafePointer.address_of(tmp)
-        _ = external_call["vprintf", Int32](
-            x.unsafe_ptr(), arg_ptr.bitcast[UnsafePointer[NoneType]]()
-        )
-        _ = tmp
-    else:
-        alias MAX_STR_LEN = 0x1000_0000
-
-        # The string can be printed, so that's fine.
-        if str_len < MAX_STR_LEN:
-            _printf["%.*s"](x.byte_length(), x.unsafe_ptr(), file=file)
-            return
-
-        # The string is large, then we need to chunk it.
-        var p = x.unsafe_ptr()
-        while str_len:
-            var ll = min(str_len, MAX_STR_LEN)
-            _printf["%.*s"](ll, p, file=file)
-            str_len -= ll
-            p += ll
-
-
 # ===----------------------------------------------------------------------=== #
 #  print
 # ===----------------------------------------------------------------------=== #
@@ -353,13 +244,13 @@ fn _put[
 
 @no_inline
 fn print[
-    *Ts: Formattable
+    *Ts: Writable
 ](
     *values: *Ts,
     sep: StaticString = " ",
     end: StaticString = "\n",
     flush: Bool = False,
-    file: FileDescriptor = stdout,
+    owned file: FileDescriptor = stdout,
 ):
     """Prints elements to the text stream. Each element is separated by `sep`
     and followed by `end`.
@@ -375,23 +266,15 @@ fn print[
         file: The output stream.
     """
 
-    var writer = Formatter(fd=file)
+    # TODO(MSTDL-1027): Print on AMD GPUs is not implemented yet.
+    @parameter
+    if is_amd_gpu():
+        return
+
+    write_buffered[buffer_size=4096](file, values, sep=sep, end=end)
 
     @parameter
-    fn print_with_separator[i: Int, T: Formattable](value: T):
-        writer.write(value)
-
-        @parameter
-        if i < len(VariadicList(Ts)) - 1:
-            writer.write(sep)
-
-    values.each_idx[print_with_separator]()
-
-    writer.write(end)
-
-    # TODO: What is a flush function that works on CUDA?
-    @parameter
-    if not triple_is_nvidia_cuda():
+    if not is_gpu():
         if flush:
             _flush(file=file)
 

@@ -13,13 +13,11 @@
 # XFAIL: asan && !system-darwin
 # RUN: %mojo %s
 
-from pathlib import _dir_of_current_file
-
 from python.python import Python, PythonObject, _get_global_python_itf
 from testing import assert_equal
 
 
-fn test_execute_python_string(inout python: Python) -> String:
+fn test_execute_python_string(mut python: Python) -> String:
     try:
         _ = Python.evaluate("print('evaluated by PyRunString')")
         return str(Python.evaluate("'a' + 'b'"))
@@ -27,9 +25,8 @@ fn test_execute_python_string(inout python: Python) -> String:
         return str(e)
 
 
-fn test_local_import(inout python: Python) -> String:
+fn test_local_import(mut python: Python) -> String:
     try:
-        Python.add_to_path(str(_dir_of_current_file()))
         var my_module: PythonObject = Python.import_module("my_module")
         if my_module:
             var foo = my_module.Foo("apple")
@@ -40,7 +37,7 @@ fn test_local_import(inout python: Python) -> String:
         return str(e)
 
 
-fn test_dynamic_import(inout python: Python, times: Int = 1) -> String:
+fn test_dynamic_import(mut python: Python, times: Int = 1) -> String:
     alias INLINE_MODULE = """
 called_already = False
 def hello(name):
@@ -59,9 +56,8 @@ def hello(name):
         return str(e)
 
 
-fn test_call(inout python: Python) -> String:
+fn test_call(mut python: Python) -> String:
     try:
-        Python.add_to_path(str(_dir_of_current_file()))
         var my_module: PythonObject = Python.import_module("my_module")
         return str(
             my_module.eat_it_all(

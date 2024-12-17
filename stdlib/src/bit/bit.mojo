@@ -22,9 +22,9 @@ from bit import count_leading_zeros
 from sys import llvm_intrinsic, sizeof
 from sys.info import bitwidthof
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # count_leading_zeros
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline("nodebug")
@@ -66,9 +66,9 @@ fn count_leading_zeros[
     )
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # count_trailing_zeros
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline("nodebug")
@@ -110,9 +110,9 @@ fn count_trailing_zeros[
     )
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # bit_reverse
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline("nodebug")
@@ -154,9 +154,9 @@ fn bit_reverse[
     ](val)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # byte_swap
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline("nodebug")
@@ -212,9 +212,9 @@ fn byte_swap[
     )
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # pop_count
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline("nodebug")
@@ -256,12 +256,12 @@ fn pop_count[
     )
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # bit_not
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
-@always_inline("nodebug")
+@always_inline
 fn bit_not[
     type: DType, width: Int, //
 ](val: SIMD[type, width]) -> SIMD[type, width]:
@@ -283,12 +283,12 @@ fn bit_not[
     """
     constrained[type.is_integral(), "must be integral"]()
     var neg_one = SIMD[type, width](-1)
-    return __mlir_op.`pop.xor`(val.value, neg_one.value)
+    return __mlir_op.`pop.simd.xor`(val.value, neg_one.value)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # bit_width
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -343,10 +343,30 @@ fn bit_width[
         return bitwidth - leading_zero
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
+# log2_floor
+# ===-----------------------------------------------------------------------===#
+
+
+@always_inline
+fn log2_floor(val: Int) -> Int:
+    """Returns the floor of the base-2 logarithm of an integer value.
+
+    Args:
+        val: The input value.
+
+    Returns:
+        The floor of the base-2 logarithm of the input value, which is equal to
+        the position of the highest set bit. Returns -1 if val is 0.
+    """
+    if val <= 1:
+        return 0
+    return bitwidthof[Int]() - count_leading_zeros(val) - 1
+
+
+# ===-----------------------------------------------------------------------===#
 # is_power_of_two
-# ===----------------------------------------------------------------------===#
-# reference: https://en.cppreference.com/w/cpp/numeric/has_single_bit
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -359,7 +379,7 @@ fn is_power_of_two(val: Int) -> Bool:
     Returns:
         True if the input value is a power of 2, False otherwise.
     """
-    return (val != 0) & (val & (val - 1) == 0)
+    return (val > 0) & (val & (val - 1) == 0)
 
 
 @always_inline
@@ -384,12 +404,16 @@ fn is_power_of_two[
     """
     constrained[type.is_integral(), "must be integral"]()
 
-    return (val != 0) & (val & (val - 1) == 0)
+    @parameter
+    if type.is_unsigned():
+        return pop_count(val) == 1
+    else:
+        return (val > 0) & (val & (val - 1) == 0)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # bit_ceil
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # reference: https://en.cppreference.com/w/cpp/numeric/bit_ceil
 
 
@@ -413,7 +437,7 @@ fn bit_ceil(val: Int) -> Int:
     return 1 << bit_width(val - 1)
 
 
-@always_inline("nodebug")
+@always_inline
 fn bit_ceil[
     type: DType, width: Int, //
 ](val: SIMD[type, width]) -> SIMD[type, width]:
@@ -443,13 +467,13 @@ fn bit_ceil[
     return (val > 1).select(1 << bit_width(val - ones), ones)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # bit_floor
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # reference: https://en.cppreference.com/w/cpp/numeric/bit_floor
 
 
-@always_inline("nodebug")
+@always_inline
 fn bit_floor(val: Int) -> Int:
     """Computes the largest power of 2 that is less than or equal to the input
     value. Any integral value less than or equal to 0 will be floored to 0.
@@ -466,7 +490,7 @@ fn bit_floor(val: Int) -> Int:
     return 1 << (bit_width(val) - 1)
 
 
-@always_inline("nodebug")
+@always_inline
 fn bit_floor[
     type: DType, width: Int, //
 ](val: SIMD[type, width]) -> SIMD[type, width]:
@@ -496,9 +520,9 @@ fn bit_floor[
     return (val > 0).select(1 << (bit_width(val) - 1), zeros)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # rotate_bits_left
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -520,8 +544,8 @@ fn rotate_bits_left[shift: Int](x: Int) -> Int:
         The input rotated to the left by `shift` elements (with wrap-around).
     """
     constrained[
-        shift >= -sizeof[Int]() and shift < sizeof[Int](),
-        "Constraints: -sizeof[Int]() <= shift < sizeof[Int]()",
+        shift >= -bitwidthof[Int]() and shift < bitwidthof[Int](),
+        "Constraints: -bitwidthof[Int]() <= shift < bitwidthof[Int]()",
     ]()
 
     @parameter
@@ -574,9 +598,9 @@ fn rotate_bits_left[
         )
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # rotate_bits_right
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -598,8 +622,8 @@ fn rotate_bits_right[shift: Int](x: Int) -> Int:
         The input rotated to the right by `shift` elements (with wrap-around).
     """
     constrained[
-        shift >= -sizeof[Int]() and shift < sizeof[Int](),
-        "Constraints: -sizeof[Int]() <= shift < sizeof[Int]()",
+        shift >= -bitwidthof[Int]() and shift < bitwidthof[Int](),
+        "Constraints: -bitwidthof[Int]() <= shift < bitwidthof[Int]()",
     ]()
 
     @parameter

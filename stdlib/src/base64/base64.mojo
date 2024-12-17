@@ -22,9 +22,13 @@ from base64 import b64encode
 from collections import List
 from sys import simdwidthof
 
-# ===----------------------------------------------------------------------===#
+import bit
+
+from ._b64encode import b64encode_with_buffers as _b64encode_with_buffers
+
+# ===-----------------------------------------------------------------------===#
 # Utilities
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -55,60 +59,56 @@ fn _ascii_to_value(char: String) -> Int:
         return -1
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # b64encode
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
-fn b64encode(str: String) -> String:
+# TODO: Use Span instead of List as input when Span is easier to use
+fn b64encode(input_bytes: List[UInt8, _], mut result: List[UInt8, _]):
     """Performs base64 encoding on the input string.
 
     Args:
-      str: The input string.
+        input_bytes: The input string buffer. Assumed to be null-terminated.
+        result: The buffer in which to store the values.
+    """
+    _b64encode_with_buffers(input_bytes, result)
+
+
+# For a nicer API, we provide those overloads:
+fn b64encode(input_string: String) -> String:
+    """Performs base64 encoding on the input string.
+
+    Args:
+        input_string: The input string buffer. Assumed to be null-terminated.
 
     Returns:
-      Base64 encoding of the input string.
+        The ASCII base64 encoded string.
     """
-    alias lookup = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    var b64chars = lookup.unsafe_ptr()
-
-    var length = str.byte_length()
-    var out = String._buffer_type(capacity=length + 1)
-
-    @parameter
-    @always_inline
-    fn s(idx: Int) -> Int:
-        return int(str.unsafe_ptr()[idx])
-
-    # This algorithm is based on https://arxiv.org/abs/1704.00605
-    var end = length - (length % 3)
-    for i in range(0, end, 3):
-        var si = s(i)
-        var si_1 = s(i + 1)
-        var si_2 = s(i + 2)
-        out.append(b64chars[si // 4])
-        out.append(b64chars[((si * 16) % 64) + si_1 // 16])
-        out.append(b64chars[((si_1 * 4) % 64) + si_2 // 64])
-        out.append(b64chars[si_2 % 64])
-
-    if end < length:
-        var si = s(end)
-        out.append(b64chars[si // 4])
-        if end == length - 1:
-            out.append(b64chars[(si * 16) % 64])
-            out.append(ord("="))
-        elif end == length - 2:
-            var si_1 = s(end + 1)
-            out.append(b64chars[((si * 16) % 64) + si_1 // 16])
-            out.append(b64chars[(si_1 * 4) % 64])
-        out.append(ord("="))
-    out.append(0)
-    return String(out^)
+    # Slicing triggers a copy, but it should work with Span later on.
+    return b64encode(input_string._buffer[:-1])
 
 
-# ===----------------------------------------------------------------------===#
+fn b64encode(input_bytes: List[UInt8, _]) -> String:
+    """Performs base64 encoding on the input string.
+
+    Args:
+        input_bytes: The input string buffer. Assumed to be null-terminated.
+
+    Returns:
+        The ASCII base64 encoded string.
+    """
+    # +1 for the null terminator and +1 to be sure
+    var result = List[UInt8, True](capacity=int(len(input_bytes) * (4 / 3)) + 2)
+    b64encode(input_bytes, result)
+    # null-terminate the result
+    result.append(0)
+    return String(result^)
+
+
+# ===-----------------------------------------------------------------------===#
 # b64decode
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline
@@ -153,9 +153,9 @@ fn b64decode(str: String) -> String:
     return p
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # b16encode
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 fn b16encode(str: String) -> String:
@@ -190,9 +190,9 @@ fn b16encode(str: String) -> String:
     return String(out^)
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # b16decode
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 
 
 @always_inline

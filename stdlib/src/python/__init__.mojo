@@ -12,5 +12,5 @@
 # ===----------------------------------------------------------------------=== #
 """Implements the python package."""
 
-from .python_object import PythonObject
 from .python import Python
+from .python_object import PythonObject, TypedPythonObject

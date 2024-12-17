@@ -10,16 +10,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo %s -t
+# RUN: %mojo-no-debug %s -t
+# NOTE: to test changes on the current branch using run-benchmarks.sh, remove
+# the -t flag. Remember to replace it again before pushing any code.
 
 from benchmark import Bench, BenchConfig, Bencher, BenchId
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # Benchmarks
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 @parameter
-fn bench_stringify_small_integers(inout b: Bencher) raises:
+fn bench_stringify_small_integers(mut b: Bencher) raises:
     @always_inline
     @parameter
     fn call_fn():
@@ -30,11 +32,11 @@ fn bench_stringify_small_integers(inout b: Bencher) raises:
     b.iter[call_fn]()
 
 
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 # Benchmark Main
-# ===----------------------------------------------------------------------===#
+# ===-----------------------------------------------------------------------===#
 def main():
-    var m = Bench(BenchConfig(num_repetitions=1, warmup_iters=100))
+    var m = Bench(BenchConfig(num_repetitions=1))
     m.bench_function[bench_stringify_small_integers](
         BenchId("bench_stringify_small_integers")
     )
